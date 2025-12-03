@@ -1,39 +1,16 @@
-### Repository Description for Custom Reticle Red Dot Project
+# Custom Retical Red Dot Project (v1)
 
----
+Overview
+This project contains PCB design files, manufacturing output (gerbers), and firmware for a compact red-dot aiming module intended for optics/targeting experiments. The firmware lives under .
 
-**Custom Reticle Red Dot Project**  
-Create a customizable red dot sight with unique reticle designs using an OLED display and microcontroller.  
+Files & structure
+-  — microcontroller firmware and test utilities.
+- ,  — manufacturing outputs (may include gerber archives and board assembly notes).
 
-This project allows you to design and implement custom reticles on an OLED display, ideal for DIY optics enthusiasts, airsoft/paintball players, or anyone interested in electronics and microcontroller-based projects.  
+Tools & build
+- Firmware: typically built with PlatformIO or the Arduino toolchain; consult  for details and dependency list.
+- PCB: standard gerber viewers or CAD tools used for review and fabrication.
 
-#### Key Features:
-- **Customizable Reticles**: Easily design and upload your own reticles using a graphics library.  
-- **OLED Display**: Supports SSD1306-based displays (128x64 or 128x32 resolutions).  
-- **Microcontroller Compatibility**: Works with popular boards like Arduino, ESP8266, or ESP32.  
-- **Brightness Control**: Adjustable brightness for different environments.  
-- **Low Power Mode**: Optimized for efficient battery usage.  
-
-#### Requirements:
-- **Hardware**:  
-  - Microcontroller (e.g., Arduino Nano, ESP32, etc.)  
-  - SSD1306 OLED Display  
-  - Push buttons or rotary encoder (for navigation and selection)  
-  - Power source (battery or USB)  
-
-- **Software**:  
-  - Arduino IDE  
-  - Adafruit GFX and SSD1306 libraries  
-
-#### How to Get Started:
-1. Clone this repository.  
-2. Install the required libraries using the Arduino Library Manager.  
-3. Customize the `reticle.h` file to add your own designs.  
-4. Upload the code to your microcontroller and enjoy!  
-
-#### Inspiration:
-This project merges DIY electronics with practical optics, giving users the freedom to experiment and personalize their red dot sight. Perfect for hobbyists, engineers, and tinkerers!  
-
----
-
-Feel free to tweak this to suit the tone and technical specifics of your project!
+Hardware
+- Microcontroller: see  for target MCU (typically small 8/32-bit MCU entries).
+- Optics: mounting and power requirements are documented near mechanical and board files.
