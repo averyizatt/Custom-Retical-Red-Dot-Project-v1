@@ -1,3 +1,28 @@
+/**
+ * RedDotCode.ino
+ *
+ * Firmware for the Custom Reticle Red Dot (v1) project.
+ *
+ * Features:
+ *  - Drives a 160x80 ST7735 TFT display with multiple reticle bitmaps.
+ *  - Cycles through reticle modes via a physical button.
+ *  - Accepts BLE commands to adjust reticle position ('u', 'd', 'l', 'r', 'm').
+ *  - Persists reticle position and selected mode across power cycles via EEPROM.
+ *
+ * BLE command protocol (write a single character):
+ *   'u' — move reticle up     'd' — move reticle down
+ *   'l' — move reticle left   'r' — move reticle right
+ *   'm' — center reticle
+ *
+ * Reticle modes (button press cycles 1 → 6 → 1):
+ *   1 — Green square   2 — (reserved)   3 — Prig animation
+ *   4 — B&W square     5 — ACOG         6 — Hello Kitty
+ */
+
+// ---------------------------------------------------------------------------
+// Includes
+// ---------------------------------------------------------------------------
+
 #include <Adafruit_GFX.h>    // Core graphics library
 #include <Adafruit_ST7735.h> // Hardware-specific library for ST7735
 #include <Adafruit_ST7789.h> // Hardware-specific library for ST7789
@@ -8,7 +33,7 @@
 #include <BLEServer.h>
 #include <BLE2902.h>
 
-// Include your bitmap header files
+// Reticle bitmap headers
 #include <ReticleA.h>
 #include <prig1.h>
 #include <prig2.h>
@@ -20,149 +45,221 @@
 #include <blueSquare.h>
 #include <squareRtgreen.h>
 
-// EEPROM settings
-#define EEPROM_SIZE 4
+// ---------------------------------------------------------------------------
+// Configuration constants
+// ---------------------------------------------------------------------------
+
+// EEPROM layout
+#define EEPROM_SIZE  4
 #define EEPROM_POS_X 0
 #define EEPROM_POS_Y 1
 #define EEPROM_CLICK 2
 
-// TFT Pins
+// TFT SPI pin assignments
 #define TFT_CS  0
 #define TFT_RST 1
 #define TFT_DC  2
 
-// BLE settings
+// BLE service / characteristic UUIDs
 #define SERVICE_UUID        "4fafc201-1fb5-459e-8fcc-c5c9c331914b"
 #define CHARACTERISTIC_UUID "beb5483e-36e1-4688-b7f5-ea07361b26a8"
 
-// Button pin
+// Physical button pin (active HIGH)
 #define BUTTON_PIN 21
 
-// TFT display object
+// Reticle position clamping limits
+#define POS_X_MIN -20
+#define POS_X_MAX  16
+#define POS_Y_MIN -10
+#define POS_Y_MAX  10
+
+// Number of reticle modes
+#define RETICLE_MODE_COUNT 6
+
+// TFT panel resolution
+#define DISPLAY_W 160
+#define DISPLAY_H  80
+
+// ---------------------------------------------------------------------------
+// Global state
+// ---------------------------------------------------------------------------
+
 Adafruit_ST7735 tft = Adafruit_ST7735(TFT_CS, TFT_DC, TFT_RST);
 
-// BLE data buffer
-char buf[30] = {0};
-String message = "blueballs";
+// BLE receive buffer — holds a single command character + null terminator
+#define BLE_CMD_BUFFER_SIZE 2
+char bleCmd[BLE_CMD_BUFFER_SIZE] = {0};
 
-// Variables
-int curClick = 1;
+int curClick    = 1;
 int reticlePosX = 0;
 int reticlePosY = 0;
 
+// ---------------------------------------------------------------------------
+// BLE callback
+// ---------------------------------------------------------------------------
+
+/**
+ * BLE write callback.
+ * Copies the received value into bleCmd so the main loop can act on it.
+ */
 class MyCallbacks : public BLECharacteristicCallbacks {
   void onWrite(BLECharacteristic *pCharacteristic) {
     String value = pCharacteristic->getValue();
-    for (int i = 0; i < value.length(); i++) {
-      buf[i] = value[i];
+    int len = min((int)value.length(), BLE_CMD_BUFFER_SIZE - 1);
+    for (int i = 0; i < len; i++) {
+      bleCmd[i] = value[i];
     }
-    buf[value.length()] = '\0'; // Null-terminate
+    bleCmd[len] = '\0'; // Null-terminate
   }
 };
+
+// ---------------------------------------------------------------------------
+// Forward declarations
+// ---------------------------------------------------------------------------
+
+void setReticlePos();
+void pickReticle();
+void drawSquareBlkWht();
+void drawGreenSquare();
+void drawAcog();
+void drawKittyHello();
+void drawPrigAnimation();
+
+// ---------------------------------------------------------------------------
+// Setup
+// ---------------------------------------------------------------------------
 
 void setup() {
   Serial.begin(9600);
   Serial.println(F("Initializing system..."));
 
-  // Initialize EEPROM
+  // --- EEPROM ---
   EEPROM.begin(EEPROM_SIZE);
-  reticlePosX = EEPROM.read(EEPROM_POS_X);
-  reticlePosY = EEPROM.read(EEPROM_POS_Y);
-  curClick = EEPROM.read(EEPROM_CLICK);
+  reticlePosX = (int8_t)EEPROM.read(EEPROM_POS_X);
+  reticlePosY = (int8_t)EEPROM.read(EEPROM_POS_Y);
+  curClick    = EEPROM.read(EEPROM_CLICK);
 
-  // Validate EEPROM values
-  if (reticlePosX > 21 || reticlePosX < -21) reticlePosX = 0;
-  if (reticlePosY > 10 || reticlePosY < -10) reticlePosY = 0;
+  // Clamp stored values to valid ranges in case of EEPROM corruption
+  if (reticlePosX < POS_X_MIN || reticlePosX > POS_X_MAX) reticlePosX = 0;
+  if (reticlePosY < POS_Y_MIN || reticlePosY > POS_Y_MAX) reticlePosY = 0;
+  if (curClick < 1 || curClick > RETICLE_MODE_COUNT)       curClick    = 1;
 
-  // Initialize button
+  // --- Button ---
   pinMode(BUTTON_PIN, INPUT);
 
-  // Initialize TFT
+  // --- TFT display ---
   tft.initR(INITR_MINI160x80_PLUGIN);
   tft.setRotation(3);
 
-  // Initialize BLE
+  // --- BLE ---
   BLEDevice::init("UglyOptic");
-  BLEServer *pServer = BLEDevice::createServer();
-  BLEService *pService = pServer->createService(SERVICE_UUID);
+  BLEServer         *pServer         = BLEDevice::createServer();
+  BLEService        *pService        = pServer->createService(SERVICE_UUID);
   BLECharacteristic *pCharacteristic = pService->createCharacteristic(
     CHARACTERISTIC_UUID,
     BLECharacteristic::PROPERTY_READ | BLECharacteristic::PROPERTY_WRITE
   );
-  pCharacteristic->setValue("where is it");
+  pCharacteristic->setValue("ready");
   pCharacteristic->addDescriptor(new BLE2902());
   pCharacteristic->setCallbacks(new MyCallbacks());
   pService->start();
   pServer->getAdvertising()->start();
 
   Serial.println(F("System initialized."));
-  PickAReticleToShow();
+  pickReticle();
 }
+
+// ---------------------------------------------------------------------------
+// Main loop
+// ---------------------------------------------------------------------------
 
 void loop() {
-  int buttonState = digitalRead(BUTTON_PIN);
-
-  if (buttonState == HIGH) {
+  // Cycle reticle mode on button press (active HIGH)
+  if (digitalRead(BUTTON_PIN) == HIGH) {
     curClick++;
-    if (curClick > 6) curClick = 1;
-    PickAReticleToShow();
+    if (curClick > RETICLE_MODE_COUNT) curClick = 1;
+    pickReticle();
   }
 
-  if (buf[0] != '\0') {
-    SetReticlePos();
+  // Handle incoming BLE command
+  if (bleCmd[0] != '\0') {
+    setReticlePos();
   }
 }
 
-void SetReticlePos() {
-  if (buf[0] == 'r' && reticlePosX > -20) reticlePosX--;
-  else if (buf[0] == 'l' && reticlePosX < 16) reticlePosX++;
-  else if (buf[0] == 'u' && reticlePosY > -10) reticlePosY--;
-  else if (buf[0] == 'd' && reticlePosY < 10) reticlePosY++;
-  else if (buf[0] == 'm') {
-    reticlePosX = 0;
-    reticlePosY = 0;
+// ---------------------------------------------------------------------------
+// Reticle positioning
+// ---------------------------------------------------------------------------
+
+/**
+ * Processes a single BLE command character stored in bleCmd and adjusts
+ * the reticle position accordingly, then redraws the display.
+ */
+void setReticlePos() {
+  switch (bleCmd[0]) {
+    case 'r': if (reticlePosX > POS_X_MIN) reticlePosX--; break;
+    case 'l': if (reticlePosX < POS_X_MAX) reticlePosX++; break;
+    case 'u': if (reticlePosY > POS_Y_MIN) reticlePosY--; break;
+    case 'd': if (reticlePosY < POS_Y_MAX) reticlePosY++; break;
+    case 'm': reticlePosX = 0; reticlePosY = 0;           break;
+    default:  break; // Unknown command — ignore
   }
-  buf[0] = '\0'; // Reset buffer
-  PickAReticleToShow();
+  bleCmd[0] = '\0'; // Clear command buffer
+  pickReticle();
 }
 
-void PickAReticleToShow() {
+// ---------------------------------------------------------------------------
+// Reticle selection & rendering
+// ---------------------------------------------------------------------------
+
+/**
+ * Clears the screen, draws the currently selected reticle, and commits
+ * the current state (position + mode) to EEPROM.
+ */
+void pickReticle() {
   tft.fillScreen(ST77XX_BLACK);
+
   switch (curClick) {
-    case 2: break; // Add function for case 2
-    case 3: PrigGif(); break;
-    case 4: SquareRetBlkWht(); break;
-    case 5: Acog(); break;
-    case 6: KittyHello(); break;
-    default: GreenSquare(); break;
+    case 1:  drawGreenSquare();    break;
+    case 2:  break;                // Reserved — no reticle drawn
+    case 3:  drawPrigAnimation();  break;
+    case 4:  drawSquareBlkWht();   break;
+    case 5:  drawAcog();           break;
+    case 6:  drawKittyHello();     break;
+    default: drawGreenSquare();    break;
   }
 
-  // Save current state to EEPROM
+  // Persist current state so it survives a power cycle
   EEPROM.write(EEPROM_POS_X, reticlePosX);
   EEPROM.write(EEPROM_POS_Y, reticlePosY);
   EEPROM.write(EEPROM_CLICK, curClick);
   EEPROM.commit();
 }
 
-void SquareRetBlkWht() {
-  tft.drawRGBBitmap(reticlePosX, reticlePosY, squareRetBlkWht, 160, 80);
+// ---------------------------------------------------------------------------
+// Individual reticle draw functions
+// ---------------------------------------------------------------------------
+
+void drawSquareBlkWht() {
+  tft.drawRGBBitmap(reticlePosX, reticlePosY, squareRetBlkWht, DISPLAY_W, DISPLAY_H);
 }
 
-void GreenSquare() {
-  tft.drawRGBBitmap(reticlePosX, reticlePosY, squareRtgreen, 160, 80);
+void drawGreenSquare() {
+  tft.drawRGBBitmap(reticlePosX, reticlePosY, squareRtgreen, DISPLAY_W, DISPLAY_H);
 }
 
-void Acog() {
-  tft.drawRGBBitmap(reticlePosX, reticlePosY, AcogRet, 160, 80);
+void drawAcog() {
+  tft.drawRGBBitmap(reticlePosX, reticlePosY, AcogRet, DISPLAY_W, DISPLAY_H);
 }
 
-void KittyHello() {
-  tft.drawRGBBitmap(reticlePosX, reticlePosY, HelloKitty, 160, 80);
+void drawKittyHello() {
+  tft.drawRGBBitmap(reticlePosX, reticlePosY, HelloKitty, DISPLAY_W, DISPLAY_H);
 }
 
-void PrigGif() {
-  tft.drawRGBBitmap(reticlePosX, reticlePosY, prig1, 160, 80);
+/** Plays a two-frame animation by alternating between prig1 and prig2 bitmaps. */
+void drawPrigAnimation() {
+  tft.drawRGBBitmap(reticlePosX, reticlePosY, prig1, DISPLAY_W, DISPLAY_H);
   delay(400);
-  tft.drawRGBBitmap(reticlePosX, reticlePosY, prig2, 160, 80);
+  tft.drawRGBBitmap(reticlePosX, reticlePosY, prig2, DISPLAY_W, DISPLAY_H);
   delay(400);
 }
